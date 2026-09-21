@@ -1,0 +1,30 @@
+name: Build XChaCha20-Poly1305 wasm
+
+on:
+  push:
+    branches: ['ci/xchacha20-wasm']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 'latest'
+
+      - name: Build
+        run: sh dist-build/emscripten-xchacha20.sh
+
+      - name: Test
+        run: node dist-build/test-xchacha20.mjs
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libsodium-xchacha20-wasm-js
+          path: dist-build/libsodium-js-xchacha20/lib/
+          if-no-files-found: error
