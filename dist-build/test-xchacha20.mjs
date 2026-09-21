@@ -109,6 +109,38 @@ const detachedText = new TextDecoder().decode(
 );
 assert(detachedText === msg, 'detached roundtrip matches');
 
+// --- ChaCha20-Poly1305 (IETF, one-shot) ---
+assert(sodium._crypto_aead_chacha20poly1305_ietf_keybytes() === 32, 'chacha20poly1305 keybytes === 32');
+assert(sodium._crypto_aead_chacha20poly1305_ietf_npubbytes() === 12, 'chacha20poly1305 npubbytes === 12');
+assert(sodium._crypto_aead_chacha20poly1305_ietf_abytes() === 16, 'chacha20poly1305 abytes === 16');
+
+const c20KeyPtr = sodium._malloc(32);
+const c20NpubPtr = sodium._malloc(12);
+sodium._crypto_aead_chacha20poly1305_ietf_keygen(c20KeyPtr);
+sodium._randombytes_buf(c20NpubPtr, 12);
+const c20CtPtr = sodium._malloc(msgBytes.length + 16);
+const c20ClenPtr = sodium._malloc(8);
+rc = sodium._crypto_aead_chacha20poly1305_ietf_encrypt(
+  c20CtPtr, c20ClenPtr, msgPtr, BigInt(msgBytes.length), 0, 0n, 0, c20NpubPtr, c20KeyPtr
+);
+assert(rc === 0, 'chacha20poly1305 encrypt rc === 0');
+const c20Clen = Number(sodium.getValue(c20ClenPtr, 'i64'));
+assert(c20Clen === msgBytes.length + 16, 'chacha20poly1305 clen === mlen + abytes');
+rc = sodium._crypto_aead_chacha20poly1305_ietf_decrypt(
+  decPtr, dlenPtr, 0, c20CtPtr, BigInt(c20Clen), 0, 0n, c20NpubPtr, c20KeyPtr
+);
+assert(rc === 0, 'chacha20poly1305 decrypt rc === 0');
+assert(
+  new TextDecoder().decode(sodium.HEAPU8.subarray(decPtr, decPtr + msgBytes.length)) === msg,
+  'chacha20poly1305 roundtrip matches'
+);
+sodium.HEAPU8[c20CtPtr] ^= 1;
+rc = sodium._crypto_aead_chacha20poly1305_ietf_decrypt(
+  decPtr, dlenPtr, 0, c20CtPtr, BigInt(c20Clen), 0, 0n, c20NpubPtr, c20KeyPtr
+);
+assert(rc === -1, 'chacha20poly1305 tampered ciphertext rejected');
+sodium.HEAPU8[c20CtPtr] ^= 1;
+
 // --- streaming (secretstream_xchacha20poly1305) ---
 const ssKeybytes = sodium._crypto_secretstream_xchacha20poly1305_keybytes();
 const ssHeaderbytes = sodium._crypto_secretstream_xchacha20poly1305_headerbytes();
