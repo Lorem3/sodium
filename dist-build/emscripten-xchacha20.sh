@@ -24,6 +24,11 @@ mkdir -p "$PREFIX"
 
 echo "Building a XChaCha20-Poly1305-only distribution in [$PREFIX]"
 
+if [ ! -f configure ]; then
+  echo "Generating configure script..."
+  autoreconf -fiv >/dev/null || ./autogen.sh -s
+fi
+
 emconfigure ./configure --enable-minimal --disable-shared --prefix="$PREFIX" \
   --without-pthreads --disable-ssp --disable-asm --disable-pie &&
   emmake make clean
