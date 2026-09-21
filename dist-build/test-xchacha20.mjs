@@ -99,12 +99,14 @@ rc = sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_detached(
 );
 assert(rc === 0, 'encrypt_detached rc === 0');
 const mlen2 = Number(sodium.getValue(mdlenPtr, 'i64'));
-assert(mlen2 === msgBytes.length, 'detached: mlenp === mlen');
+assert(mlen2 === abytes, 'detached: maclenp === abytes');
 rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_detached(
-  decPtr, 0, ctPtr, BigInt(mlen2), macPtr, 0, 0n, npubPtr, keyPtr
+  decPtr, 0, ctPtr, BigInt(msgBytes.length), macPtr, 0, 0n, npubPtr, keyPtr
 );
 assert(rc === 0, 'decrypt_detached rc === 0');
-const detachedText = new TextDecoder().decode(sodium.HEAPU8.subarray(decPtr, decPtr + mlen2));
+const detachedText = new TextDecoder().decode(
+  sodium.HEAPU8.subarray(decPtr, decPtr + msgBytes.length)
+);
 assert(detachedText === msg, 'detached roundtrip matches');
 
 const hexMax = 2 * keybytes + 1;
@@ -114,8 +116,10 @@ const keyHex = sodium.UTF8ToString(hexPtr);
 assert(keyHex.length === 2 * keybytes, 'bin2hex length');
 
 const keyCopy = sodium._malloc(keybytes);
-const binLen = sodium._sodium_hex2bin(keyCopy, keybytes, keyHex, keyHex.length, 0, 0, 0);
-assert(binLen === keybytes, 'hex2bin length');
+const hexInPtr = sodium._malloc(keyHex.length + 1);
+sodium.stringToUTF8(keyHex, hexInPtr, keyHex.length + 1);
+const binRc = sodium._sodium_hex2bin(keyCopy, keybytes, hexInPtr, keyHex.length, 0, 0, 0);
+assert(binRc === 0, 'hex2bin rc === 0');
 let hexOk = true;
 for (let i = 0; i < keybytes; i++) {
   if (sodium.HEAPU8[keyPtr + i] !== sodium.HEAPU8[keyCopy + i]) { hexOk = false; break; }
