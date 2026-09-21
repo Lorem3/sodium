@@ -27,8 +27,8 @@ function assert(cond, msg) {
 const sodium = await sodiumFactory();
 assert(sodium._sodium_init() === 0, 'sodium_init');
 
-assert(sodium._sodium_library_version_major() === 10, 'library_version_major');
-assert(sodium._sodium_library_version_minor() === 3, 'library_version_minor');
+assert(sodium._sodium_library_version_major() === 11, 'library_version_major');
+assert(sodium._sodium_library_version_minor() === 0, 'library_version_minor');
 
 const keybytes = sodium._crypto_aead_xchacha20poly1305_ietf_keybytes();
 const nsecbytes = sodium._crypto_aead_xchacha20poly1305_ietf_nsecbytes();
@@ -40,7 +40,12 @@ assert(keybytes === 32, 'keybytes === 32');
 assert(nsecbytes === 0, 'nsecbytes === 0');
 assert(npubbytes === 24, 'npubbytes === 24');
 assert(abytes === 16, 'abytes === 16');
-assert(maxbytes === -1 || maxbytes === 4294967295, 'messagebytes_max === SIZE_MAX');
+const sizemax = 4294967295;
+const expectedMax = sizemax - abytes; // SIZE_MAX - 16
+assert(
+  maxbytes === expectedMax || maxbytes === expectedMax - 2 ** 32,
+  'messagebytes_max === SIZE_MAX - abytes'
+);
 
 const keyPtr = sodium._malloc(keybytes);
 const npubPtr = sodium._malloc(npubbytes);
