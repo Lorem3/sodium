@@ -109,6 +109,72 @@ const detachedText = new TextDecoder().decode(
 );
 assert(detachedText === msg, 'detached roundtrip matches');
 
+// --- streaming (secretstream_xchacha20poly1305) ---
+const ssKeybytes = sodium._crypto_secretstream_xchacha20poly1305_keybytes();
+const ssHeaderbytes = sodium._crypto_secretstream_xchacha20poly1305_headerbytes();
+const ssAbytes = sodium._crypto_secretstream_xchacha20poly1305_abytes();
+const ssStatebytes = sodium._crypto_secretstream_xchacha20poly1305_statebytes();
+assert(ssKeybytes === 32, 'secretstream keybytes === 32');
+assert(ssHeaderbytes === 24, 'secretstream headerbytes === 24');
+assert(ssAbytes === 17, 'secretstream abytes === 17');
+
+const TAG_MESSAGE = sodium._crypto_secretstream_xchacha20poly1305_tag_message();
+const TAG_FINAL = sodium._crypto_secretstream_xchacha20poly1305_tag_final();
+
+const ssKeyPtr = sodium._malloc(ssKeybytes);
+sodium._crypto_secretstream_xchacha20poly1305_keygen(ssKeyPtr);
+const ssHeaderPtr = sodium._malloc(ssHeaderbytes);
+const statePush = sodium._malloc(ssStatebytes);
+assert(sodium._crypto_secretstream_xchacha20poly1305_init_push(statePush, ssHeaderPtr, ssKeyPtr) === 0, 'init_push');
+
+const pushChunk = (chunk, tag) => {
+  const bytes = new TextEncoder().encode(chunk);
+  const mPtr = sodium._malloc(bytes.length);
+  sodium.HEAPU8.set(bytes, mPtr);
+  const cPtr = sodium._malloc(bytes.length + ssAbytes);
+  const cLenPtr = sodium._malloc(8);
+  const rc = sodium._crypto_secretstream_xchacha20poly1305_push(
+    statePush, cPtr, cLenPtr, mPtr, BigInt(bytes.length), 0, 0n, tag
+  );
+  const clen = Number(sodium.getValue(cLenPtr, 'i64'));
+  if (rc !== 0 || clen !== bytes.length + ssAbytes) return null;
+  return { cPtr, clen, size: bytes.length };
+};
+
+const pullChunk = (state, cPtr, clen, size) => {
+  const mPtr = sodium._malloc(size);
+  const tagPtr = sodium._malloc(1);
+  const rc = sodium._crypto_secretstream_xchacha20poly1305_pull(
+    state, mPtr, sodium._malloc(8), tagPtr, cPtr, BigInt(clen), 0, 0n
+  );
+  if (rc !== 0) return null;
+  return {
+    text: new TextDecoder().decode(sodium.HEAPU8.subarray(mPtr, mPtr + size)),
+    tag: sodium.HEAPU8[tagPtr],
+  };
+};
+
+const chunks = ['first chunk 你好', 'second chunk', 'final chunk'];
+const pushed = [
+  pushChunk(chunks[0], TAG_MESSAGE),
+  pushChunk(chunks[1], TAG_MESSAGE),
+  pushChunk(chunks[2], TAG_FINAL),
+];
+assert(pushed.every(Boolean), 'push all chunks');
+
+const statePull = sodium._malloc(ssStatebytes);
+assert(sodium._crypto_secretstream_xchacha20poly1305_init_pull(statePull, ssHeaderPtr, ssKeyPtr) === 0, 'init_pull');
+for (let i = 0; i < 3; i++) {
+  const got = pullChunk(statePull, pushed[i].cPtr, pushed[i].clen, pushed[i].size);
+  assert(got && got.text === chunks[i], `pull chunk ${i} text`);
+  assert(got && got.tag === (i === 2 ? TAG_FINAL : TAG_MESSAGE), `pull chunk ${i} tag`);
+}
+
+const statePull2 = sodium._malloc(ssStatebytes);
+assert(sodium._crypto_secretstream_xchacha20poly1305_init_pull(statePull2, ssHeaderPtr, ssKeyPtr) === 0, 'init_pull 2');
+const skipped = pullChunk(statePull2, pushed[1].cPtr, pushed[1].clen, pushed[1].size);
+assert(skipped === null, 'out-of-order chunk rejected');
+
 const hexMax = 2 * keybytes + 1;
 const hexPtr = sodium._malloc(hexMax);
 sodium._sodium_bin2hex(hexPtr, hexMax, keyPtr, keybytes);
