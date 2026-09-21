@@ -61,7 +61,7 @@ const clenPtr = sodium._malloc(8);
 const ctPtr = sodium._malloc(msgBytes.length + abytes);
 
 let rc = sodium._crypto_aead_xchacha20poly1305_ietf_encrypt(
-  ctPtr, clenPtr, msgPtr, msgBytes.length, 0, 0, 0, npubPtr, keyPtr
+  ctPtr, clenPtr, msgPtr, BigInt(msgBytes.length), 0, 0n, 0, npubPtr, keyPtr
 );
 assert(rc === 0, 'encrypt rc === 0');
 const clen = Number(sodium.getValue(clenPtr, 'i64'));
@@ -70,7 +70,7 @@ assert(clen === msgBytes.length + abytes, 'clen === mlen + abytes');
 const decPtr = sodium._malloc(clen);
 const dlenPtr = sodium._malloc(8);
 rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt(
-  decPtr, dlenPtr, 0, ctPtr, clen, 0, 0, npubPtr, keyPtr
+  decPtr, dlenPtr, 0, ctPtr, BigInt(clen), 0, 0n, npubPtr, keyPtr
 );
 assert(rc === 0, 'decrypt rc === 0');
 const dlen = Number(sodium.getValue(dlenPtr, 'i64'));
@@ -80,7 +80,7 @@ assert(decrypted === msg, 'roundtrip text matches');
 
 sodium.HEAPU8[ctPtr] ^= 1;
 rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt(
-  decPtr, dlenPtr, 0, ctPtr, clen, 0, 0, npubPtr, keyPtr
+  decPtr, dlenPtr, 0, ctPtr, BigInt(clen), 0, 0n, npubPtr, keyPtr
 );
 assert(rc === -1, 'tampered ciphertext rejected');
 sodium.HEAPU8[ctPtr] ^= 1;
@@ -88,20 +88,20 @@ sodium.HEAPU8[ctPtr] ^= 1;
 const badKeyPtr = sodium._malloc(keybytes);
 sodium._crypto_aead_xchacha20poly1305_ietf_keygen(badKeyPtr);
 rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt(
-  decPtr, dlenPtr, 0, ctPtr, clen, 0, 0, npubPtr, badKeyPtr
+  decPtr, dlenPtr, 0, ctPtr, BigInt(clen), 0, 0n, npubPtr, badKeyPtr
 );
 assert(rc === -1, 'wrong key rejected');
 
 const macPtr = sodium._malloc(abytes);
 const mdlenPtr = sodium._malloc(8);
 rc = sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_detached(
-  ctPtr, macPtr, mdlenPtr, msgPtr, msgBytes.length, 0, 0, 0, npubPtr, keyPtr
+  ctPtr, macPtr, mdlenPtr, msgPtr, BigInt(msgBytes.length), 0, 0n, 0, npubPtr, keyPtr
 );
 assert(rc === 0, 'encrypt_detached rc === 0');
 const mlen2 = Number(sodium.getValue(mdlenPtr, 'i64'));
 assert(mlen2 === msgBytes.length, 'detached: mlenp === mlen');
 rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_detached(
-  decPtr, 0, ctPtr, mlen2, macPtr, 0, 0, npubPtr, keyPtr
+  decPtr, 0, ctPtr, BigInt(mlen2), macPtr, 0, 0n, npubPtr, keyPtr
 );
 assert(rc === 0, 'decrypt_detached rc === 0');
 const detachedText = new TextDecoder().decode(sodium.HEAPU8.subarray(decPtr, decPtr + mlen2));
