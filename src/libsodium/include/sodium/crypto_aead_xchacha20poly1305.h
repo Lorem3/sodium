@@ -2,6 +2,9 @@
 #define crypto_aead_xchacha20poly1305_H
 
 #include <stddef.h>
+#include <stdint.h>
+
+#include "crypto_onetimeauth_poly1305.h"
 #include "export.h"
 
 #ifdef __cplusplus
@@ -84,6 +87,66 @@ int crypto_aead_xchacha20poly1305_ietf_decrypt_detached(unsigned char *m,
 SODIUM_EXPORT
 void crypto_aead_xchacha20poly1305_ietf_keygen(unsigned char k[crypto_aead_xchacha20poly1305_ietf_KEYBYTES])
             __attribute__ ((nonnull));
+
+/*
+ * Incremental API producing the same ciphertext and single 16-byte tag as the
+ * one-shot IETF functions above. AD is supplied only in *_init.
+ *
+ * Decrypt is decrypt-then-verify: plaintext from *_decrypt_update is written
+ * before the tag is checked in *_decrypt_final. On forgery, prior plaintext
+ * chunks may already have been exposed to the caller; *_decrypt_final returns
+ * -1 and wipes the state, but cannot recall previously returned plaintext.
+ */
+
+typedef struct CRYPTO_ALIGN(16) crypto_aead_xchacha20poly1305_ietf_state {
+    crypto_onetimeauth_poly1305_state poly;
+    unsigned char                     k[32];
+    unsigned char                     npub[12];
+    unsigned char                     ks[64];
+    unsigned char                     ks_off; /* next unused byte in ks; 64 = empty */
+    unsigned char                     _pad[7];
+    uint64_t                          adlen;
+    uint64_t                          mlen;
+} crypto_aead_xchacha20poly1305_ietf_state;
+
+SODIUM_EXPORT
+size_t crypto_aead_xchacha20poly1305_ietf_statebytes(void);
+
+SODIUM_EXPORT
+int crypto_aead_xchacha20poly1305_ietf_encrypt_init(
+    crypto_aead_xchacha20poly1305_ietf_state *state,
+    const unsigned char *ad, unsigned long long adlen,
+    const unsigned char *npub, const unsigned char *k)
+            __attribute__ ((nonnull(1, 4, 5)));
+
+SODIUM_EXPORT
+int crypto_aead_xchacha20poly1305_ietf_encrypt_update(
+    crypto_aead_xchacha20poly1305_ietf_state *state,
+    unsigned char *c, const unsigned char *m, unsigned long long mlen)
+            __attribute__ ((nonnull(1)));
+
+SODIUM_EXPORT
+int crypto_aead_xchacha20poly1305_ietf_encrypt_final(
+    crypto_aead_xchacha20poly1305_ietf_state *state, unsigned char *mac)
+            __attribute__ ((nonnull));
+
+SODIUM_EXPORT
+int crypto_aead_xchacha20poly1305_ietf_decrypt_init(
+    crypto_aead_xchacha20poly1305_ietf_state *state,
+    const unsigned char *ad, unsigned long long adlen,
+    const unsigned char *npub, const unsigned char *k)
+            __attribute__ ((nonnull(1, 4, 5)));
+
+SODIUM_EXPORT
+int crypto_aead_xchacha20poly1305_ietf_decrypt_update(
+    crypto_aead_xchacha20poly1305_ietf_state *state,
+    unsigned char *m, const unsigned char *c, unsigned long long clen)
+            __attribute__ ((nonnull(1)));
+
+SODIUM_EXPORT
+int crypto_aead_xchacha20poly1305_ietf_decrypt_final(
+    crypto_aead_xchacha20poly1305_ietf_state *state, const unsigned char *mac)
+            __attribute__ ((warn_unused_result)) __attribute__ ((nonnull));
 
 /* Aliases */
 

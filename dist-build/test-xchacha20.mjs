@@ -29,23 +29,32 @@ assert(sodium._sodium_init() === 0, 'sodium_init');
 
 assert(sodium._sodium_library_version_major() === 11, 'library_version_major');
 assert(sodium._sodium_library_version_minor() === 0, 'library_version_minor');
+assert(sodium._sodium_library_minimal() === 1, 'library_minimal');
 
 const keybytes = sodium._crypto_aead_xchacha20poly1305_ietf_keybytes();
 const nsecbytes = sodium._crypto_aead_xchacha20poly1305_ietf_nsecbytes();
 const npubbytes = sodium._crypto_aead_xchacha20poly1305_ietf_npubbytes();
 const abytes = sodium._crypto_aead_xchacha20poly1305_ietf_abytes();
 const maxbytes = sodium._crypto_aead_xchacha20poly1305_ietf_messagebytes_max();
+const statebytes = sodium._crypto_aead_xchacha20poly1305_ietf_statebytes();
 
 assert(keybytes === 32, 'keybytes === 32');
 assert(nsecbytes === 0, 'nsecbytes === 0');
 assert(npubbytes === 24, 'npubbytes === 24');
 assert(abytes === 16, 'abytes === 16');
+assert(statebytes > 0, 'statebytes > 0');
 const sizemax = 4294967295;
-const expectedMax = sizemax - abytes; // SIZE_MAX - 16
+const expectedMax = sizemax - abytes;
 assert(
   maxbytes === expectedMax || maxbytes === expectedMax - 2 ** 32,
   'messagebytes_max === SIZE_MAX - abytes'
 );
+
+// Forbidden APIs must not be exported from this trimmed build.
+assert(typeof sodium._crypto_secretstream_xchacha20poly1305_push === 'undefined',
+  'secretstream not exported');
+assert(typeof sodium._crypto_aead_chacha20poly1305_ietf_encrypt === 'undefined',
+  'chacha20poly1305 not exported');
 
 const keyPtr = sodium._malloc(keybytes);
 const npubPtr = sodium._malloc(npubbytes);
@@ -109,134 +118,125 @@ const detachedText = new TextDecoder().decode(
 );
 assert(detachedText === msg, 'detached roundtrip matches');
 
-// --- ChaCha20-Poly1305 (IETF, one-shot) ---
-assert(sodium._crypto_aead_chacha20poly1305_ietf_keybytes() === 32, 'chacha20poly1305 keybytes === 32');
-assert(sodium._crypto_aead_chacha20poly1305_ietf_npubbytes() === 12, 'chacha20poly1305 npubbytes === 12');
-assert(sodium._crypto_aead_chacha20poly1305_ietf_abytes() === 16, 'chacha20poly1305 abytes === 16');
+// --- streaming AEAD (single tag, matches one-shot) ---
+const streamPlain = new TextEncoder().encode(
+  'stream chunk A · stream chunk B · final bytes 0123456789'
+);
+const streamMsgPtr = sodium._malloc(streamPlain.length);
+sodium.HEAPU8.set(streamPlain, streamMsgPtr);
 
-const c20KeyPtr = sodium._malloc(32);
-const c20NpubPtr = sodium._malloc(12);
-sodium._crypto_aead_chacha20poly1305_ietf_keygen(c20KeyPtr);
-sodium._randombytes_buf(c20NpubPtr, 12);
-const c20CtPtr = sodium._malloc(msgBytes.length + 16);
-const c20ClenPtr = sodium._malloc(8);
-rc = sodium._crypto_aead_chacha20poly1305_ietf_encrypt(
-  c20CtPtr, c20ClenPtr, msgPtr, BigInt(msgBytes.length), 0, 0n, 0, c20NpubPtr, c20KeyPtr
+const oneShotCtPtr = sodium._malloc(streamPlain.length);
+const oneShotMacPtr = sodium._malloc(abytes);
+rc = sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_detached(
+  oneShotCtPtr, oneShotMacPtr, mdlenPtr, streamMsgPtr, BigInt(streamPlain.length),
+  0, 0n, 0, npubPtr, keyPtr
 );
-assert(rc === 0, 'chacha20poly1305 encrypt rc === 0');
-const c20Clen = Number(sodium.getValue(c20ClenPtr, 'i64'));
-assert(c20Clen === msgBytes.length + 16, 'chacha20poly1305 clen === mlen + abytes');
-rc = sodium._crypto_aead_chacha20poly1305_ietf_decrypt(
-  decPtr, dlenPtr, 0, c20CtPtr, BigInt(c20Clen), 0, 0n, c20NpubPtr, c20KeyPtr
-);
-assert(rc === 0, 'chacha20poly1305 decrypt rc === 0');
+assert(rc === 0, 'oneshot encrypt for stream compare');
+
+const streamCtPtr = sodium._malloc(streamPlain.length);
+const streamMacPtr = sodium._malloc(abytes);
+const encState = sodium._malloc(statebytes);
 assert(
-  new TextDecoder().decode(sodium.HEAPU8.subarray(decPtr, decPtr + msgBytes.length)) === msg,
-  'chacha20poly1305 roundtrip matches'
+  sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_init(encState, 0, 0n, npubPtr, keyPtr) === 0,
+  'aead encrypt_init'
 );
-sodium.HEAPU8[c20CtPtr] ^= 1;
-rc = sodium._crypto_aead_chacha20poly1305_ietf_decrypt(
-  decPtr, dlenPtr, 0, c20CtPtr, BigInt(c20Clen), 0, 0n, c20NpubPtr, c20KeyPtr
+const streamChunks = [1, 7, 16, 33, 64, 20];
+let soff = 0;
+let si = 0;
+while (soff < streamPlain.length) {
+  let n = streamChunks[si % streamChunks.length];
+  if (n > streamPlain.length - soff) n = streamPlain.length - soff;
+  rc = sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_update(
+    encState, streamCtPtr + soff, streamMsgPtr + soff, BigInt(n)
+  );
+  assert(rc === 0, `aead encrypt_update chunk ${si}`);
+  soff += n;
+  si++;
+}
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_final(encState, streamMacPtr) === 0,
+  'aead encrypt_final'
 );
-assert(rc === -1, 'chacha20poly1305 tampered ciphertext rejected');
-sodium.HEAPU8[c20CtPtr] ^= 1;
+let streamCtOk = true;
+for (let i = 0; i < streamPlain.length; i++) {
+  if (sodium.HEAPU8[oneShotCtPtr + i] !== sodium.HEAPU8[streamCtPtr + i]) {
+    streamCtOk = false;
+    break;
+  }
+}
+assert(streamCtOk, 'stream ciphertext === oneshot ciphertext');
+let streamMacOk = true;
+for (let i = 0; i < abytes; i++) {
+  if (sodium.HEAPU8[oneShotMacPtr + i] !== sodium.HEAPU8[streamMacPtr + i]) {
+    streamMacOk = false;
+    break;
+  }
+}
+assert(streamMacOk, 'stream mac === oneshot mac');
 
-// --- streaming (secretstream_xchacha20poly1305) ---
-const ssKeybytes = sodium._crypto_secretstream_xchacha20poly1305_keybytes();
-const ssHeaderbytes = sodium._crypto_secretstream_xchacha20poly1305_headerbytes();
-const ssAbytes = sodium._crypto_secretstream_xchacha20poly1305_abytes();
-const ssStatebytes = sodium._crypto_secretstream_xchacha20poly1305_statebytes();
-assert(ssKeybytes === 32, 'secretstream keybytes === 32');
-assert(ssHeaderbytes === 24, 'secretstream headerbytes === 24');
-assert(ssAbytes === 17, 'secretstream abytes === 17');
-
-const TAG_MESSAGE = sodium._crypto_secretstream_xchacha20poly1305_tag_message();
-const TAG_FINAL = sodium._crypto_secretstream_xchacha20poly1305_tag_final();
-
-const ssKeyPtr = sodium._malloc(ssKeybytes);
-sodium._crypto_secretstream_xchacha20poly1305_keygen(ssKeyPtr);
-const ssHeaderPtr = sodium._malloc(ssHeaderbytes);
-const statePush = sodium._malloc(ssStatebytes);
-assert(sodium._crypto_secretstream_xchacha20poly1305_init_push(statePush, ssHeaderPtr, ssKeyPtr) === 0, 'init_push');
-
-const pushChunk = (chunk, tag) => {
-  const bytes = new TextEncoder().encode(chunk);
-  const mPtr = sodium._malloc(bytes.length);
-  sodium.HEAPU8.set(bytes, mPtr);
-  const cPtr = sodium._malloc(bytes.length + ssAbytes);
-  const cLenPtr = sodium._malloc(8);
-  const rc = sodium._crypto_secretstream_xchacha20poly1305_push(
-    statePush, cPtr, cLenPtr, mPtr, BigInt(bytes.length), 0, 0n, tag
+const streamDecPtr = sodium._malloc(streamPlain.length);
+const decState = sodium._malloc(statebytes);
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_init(decState, 0, 0n, npubPtr, keyPtr) === 0,
+  'aead decrypt_init'
+);
+soff = 0;
+si = 0;
+while (soff < streamPlain.length) {
+  let n = streamChunks[(si + 2) % streamChunks.length];
+  if (n > streamPlain.length - soff) n = streamPlain.length - soff;
+  rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_update(
+    decState, streamDecPtr + soff, streamCtPtr + soff, BigInt(n)
   );
-  const clen = Number(sodium.getValue(cLenPtr, 'i64'));
-  if (rc !== 0 || clen !== bytes.length + ssAbytes) return null;
-  return { cPtr, clen, size: bytes.length };
-};
-
-const pullChunk = (state, cPtr, clen, size) => {
-  const mPtr = sodium._malloc(size);
-  const tagPtr = sodium._malloc(1);
-  const rc = sodium._crypto_secretstream_xchacha20poly1305_pull(
-    state, mPtr, sodium._malloc(8), tagPtr, cPtr, BigInt(clen), 0, 0n
-  );
-  if (rc !== 0) return null;
-  return {
-    text: new TextDecoder().decode(sodium.HEAPU8.subarray(mPtr, mPtr + size)),
-    tag: sodium.HEAPU8[tagPtr],
-  };
-};
-
-const chunks = ['first chunk 你好', 'second chunk', 'final chunk'];
-const pushed = [
-  pushChunk(chunks[0], TAG_MESSAGE),
-  pushChunk(chunks[1], TAG_MESSAGE),
-  pushChunk(chunks[2], TAG_FINAL),
-];
-assert(pushed.every(Boolean), 'push all chunks');
-
-const statePull = sodium._malloc(ssStatebytes);
-assert(sodium._crypto_secretstream_xchacha20poly1305_init_pull(statePull, ssHeaderPtr, ssKeyPtr) === 0, 'init_pull');
-for (let i = 0; i < 3; i++) {
-  const got = pullChunk(statePull, pushed[i].cPtr, pushed[i].clen, pushed[i].size);
-  assert(got && got.text === chunks[i], `pull chunk ${i} text`);
-  assert(got && got.tag === (i === 2 ? TAG_FINAL : TAG_MESSAGE), `pull chunk ${i} tag`);
+  assert(rc === 0, `aead decrypt_update chunk ${si}`);
+  soff += n;
+  si++;
 }
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_final(decState, streamMacPtr) === 0,
+  'aead decrypt_final'
+);
+assert(
+  new TextDecoder().decode(sodium.HEAPU8.subarray(streamDecPtr, streamDecPtr + streamPlain.length)) ===
+    new TextDecoder().decode(streamPlain),
+  'stream decrypt roundtrip'
+);
 
-const statePull2 = sodium._malloc(ssStatebytes);
-assert(sodium._crypto_secretstream_xchacha20poly1305_init_pull(statePull2, ssHeaderPtr, ssKeyPtr) === 0, 'init_pull 2');
-const skipped = pullChunk(statePull2, pushed[1].cPtr, pushed[1].clen, pushed[1].size);
-assert(skipped === null, 'out-of-order chunk rejected');
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_init(decState, 0, 0n, npubPtr, keyPtr) === 0,
+  'aead decrypt_init bad mac'
+);
+rc = sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_update(
+  decState, streamDecPtr, streamCtPtr, BigInt(streamPlain.length)
+);
+assert(rc === 0, 'aead decrypt_update before bad mac');
+sodium.HEAPU8[streamMacPtr] ^= 1;
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_decrypt_final(decState, streamMacPtr) === -1,
+  'aead decrypt_final rejects bad mac'
+);
+sodium.HEAPU8[streamMacPtr] ^= 1;
 
-const hexMax = 2 * keybytes + 1;
-const hexPtr = sodium._malloc(hexMax);
-sodium._sodium_bin2hex(hexPtr, hexMax, keyPtr, keybytes);
-const keyHex = sodium.UTF8ToString(hexPtr);
-assert(keyHex.length === 2 * keybytes, 'bin2hex length');
-
-const keyCopy = sodium._malloc(keybytes);
-const hexInPtr = sodium._malloc(keyHex.length + 1);
-sodium.stringToUTF8(keyHex, hexInPtr, keyHex.length + 1);
-const binRc = sodium._sodium_hex2bin(keyCopy, keybytes, hexInPtr, keyHex.length, 0, 0, 0);
-assert(binRc === 0, 'hex2bin rc === 0');
-let hexOk = true;
-for (let i = 0; i < keybytes; i++) {
-  if (sodium.HEAPU8[keyPtr + i] !== sodium.HEAPU8[keyCopy + i]) { hexOk = false; break; }
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_init(encState, 0, 0n, npubPtr, keyPtr) === 0,
+  'empty encrypt_init'
+);
+assert(
+  sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_final(encState, streamMacPtr) === 0,
+  'empty encrypt_final'
+);
+rc = sodium._crypto_aead_xchacha20poly1305_ietf_encrypt_detached(
+  oneShotCtPtr, oneShotMacPtr, mdlenPtr, streamMsgPtr, 0n, 0, 0n, 0, npubPtr, keyPtr
+);
+assert(rc === 0, 'empty oneshot encrypt');
+streamMacOk = true;
+for (let i = 0; i < abytes; i++) {
+  if (sodium.HEAPU8[oneShotMacPtr + i] !== sodium.HEAPU8[streamMacPtr + i]) {
+    streamMacOk = false;
+    break;
+  }
 }
-assert(hexOk, 'hex2bin roundtrip');
-
-const VARIANT_ORIGINAL = 1;
-const b64Max = sodium._sodium_base64_encoded_len(keybytes, VARIANT_ORIGINAL);
-const b64Ptr = sodium._malloc(b64Max);
-sodium._sodium_bin2base64(b64Ptr, b64Max, keyPtr, keybytes, VARIANT_ORIGINAL);
-const keyB64 = sodium.UTF8ToString(b64Ptr);
-const b64Copy = sodium._malloc(keybytes);
-const b64rc = sodium._sodium_base642bin(b64Copy, keybytes, b64Ptr, keyB64.length, 0, 0, 0, VARIANT_ORIGINAL);
-assert(b64rc === 0, 'base642bin rc === 0');
-let b64Ok = true;
-for (let i = 0; i < keybytes; i++) {
-  if (sodium.HEAPU8[keyPtr + i] !== sodium.HEAPU8[b64Copy + i]) { b64Ok = false; break; }
-}
-assert(b64Ok, 'base64 roundtrip');
+assert(streamMacOk, 'empty stream mac === oneshot mac');
 
 if (failed > 0) {
   console.error(`${failed} test(s) FAILED`);

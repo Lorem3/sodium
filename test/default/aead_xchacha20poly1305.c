@@ -185,6 +185,8 @@ tv(void)
     assert(crypto_aead_xchacha20poly1305_ietf_nsecbytes() == 0U);
     assert(crypto_aead_xchacha20poly1305_ietf_nsecbytes() == crypto_aead_xchacha20poly1305_ietf_NSECBYTES);
     assert(crypto_aead_xchacha20poly1305_ietf_messagebytes_max() == crypto_aead_xchacha20poly1305_ietf_MESSAGEBYTES_MAX);
+    assert(crypto_aead_xchacha20poly1305_ietf_statebytes() ==
+           sizeof(crypto_aead_xchacha20poly1305_ietf_state));
     assert(crypto_aead_xchacha20poly1305_IETF_KEYBYTES  == crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
     assert(crypto_aead_xchacha20poly1305_IETF_NSECBYTES == crypto_aead_xchacha20poly1305_ietf_NSECBYTES);
     assert(crypto_aead_xchacha20poly1305_IETF_NPUBBYTES == crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
@@ -194,10 +196,140 @@ tv(void)
     return 0;
 }
 
+static void
+tv_stream(void)
+{
+#undef  MLEN
+#define MLEN 200U
+#undef  ADLEN
+#define ADLEN 17U
+    unsigned char *m = (unsigned char *) sodium_malloc(MLEN);
+    unsigned char *c_one = (unsigned char *) sodium_malloc(MLEN);
+    unsigned char *c_stream = (unsigned char *) sodium_malloc(MLEN);
+    unsigned char *m2 = (unsigned char *) sodium_malloc(MLEN);
+    unsigned char *mac_one = (unsigned char *) sodium_malloc(crypto_aead_xchacha20poly1305_ietf_ABYTES);
+    unsigned char *mac_stream = (unsigned char *) sodium_malloc(crypto_aead_xchacha20poly1305_ietf_ABYTES);
+    unsigned char *ad = (unsigned char *) sodium_malloc(ADLEN);
+    unsigned char *nonce = (unsigned char *) sodium_malloc(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    unsigned char *key = (unsigned char *) sodium_malloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+    crypto_aead_xchacha20poly1305_ietf_state state;
+    size_t         chunks[] = { 1U, 3U, 17U, 64U, 65U, 50U };
+    size_t         nchunks = sizeof chunks / sizeof chunks[0];
+    size_t         off;
+    size_t         i;
+    size_t         n;
+
+    randombytes_buf(m, MLEN);
+    randombytes_buf(ad, ADLEN);
+    randombytes_buf(nonce, crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    crypto_aead_xchacha20poly1305_ietf_keygen(key);
+
+    crypto_aead_xchacha20poly1305_ietf_encrypt_detached(c_one, mac_one, NULL,
+                                                        m, MLEN, ad, ADLEN,
+                                                        NULL, nonce, key);
+
+    if (crypto_aead_xchacha20poly1305_ietf_encrypt_init(&state, ad, ADLEN,
+                                                        nonce, key) != 0) {
+        printf("encrypt_init failed\n");
+    }
+    off = 0U;
+    i = 0U;
+    while (off < MLEN) {
+        n = chunks[i % nchunks];
+        if (n > MLEN - off) {
+            n = MLEN - off;
+        }
+        if (crypto_aead_xchacha20poly1305_ietf_encrypt_update(&state,
+                                                              c_stream + off,
+                                                              m + off, n) != 0) {
+            printf("encrypt_update failed\n");
+        }
+        off += n;
+        i++;
+    }
+    if (crypto_aead_xchacha20poly1305_ietf_encrypt_final(&state, mac_stream) != 0) {
+        printf("encrypt_final failed\n");
+    }
+    if (memcmp(c_one, c_stream, MLEN) != 0) {
+        printf("stream ciphertext != one-shot ciphertext\n");
+    }
+    if (memcmp(mac_one, mac_stream, crypto_aead_xchacha20poly1305_ietf_ABYTES) != 0) {
+        printf("stream mac != one-shot mac\n");
+    }
+
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt_init(&state, ad, ADLEN,
+                                                        nonce, key) != 0) {
+        printf("decrypt_init failed\n");
+    }
+    off = 0U;
+    i = 0U;
+    while (off < MLEN) {
+        n = chunks[(i + 3U) % nchunks];
+        if (n > MLEN - off) {
+            n = MLEN - off;
+        }
+        if (crypto_aead_xchacha20poly1305_ietf_decrypt_update(&state, m2 + off,
+                                                              c_stream + off, n) != 0) {
+            printf("decrypt_update failed\n");
+        }
+        off += n;
+        i++;
+    }
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt_final(&state, mac_stream) != 0) {
+        printf("decrypt_final failed\n");
+    }
+    if (memcmp(m, m2, MLEN) != 0) {
+        printf("stream decrypted != plaintext\n");
+    }
+
+    mac_stream[0] ^= 0x01;
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt_init(&state, ad, ADLEN,
+                                                        nonce, key) != 0) {
+        printf("decrypt_init (bad mac) failed\n");
+    }
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt_update(&state, m2, c_stream,
+                                                          MLEN) != 0) {
+        printf("decrypt_update (bad mac) failed\n");
+    }
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt_final(&state, mac_stream) == 0) {
+        printf("decrypt_final accepted a bad mac\n");
+    }
+    mac_stream[0] ^= 0x01;
+
+    /* empty message */
+    if (crypto_aead_xchacha20poly1305_ietf_encrypt_init(&state, ad, ADLEN,
+                                                        nonce, key) != 0 ||
+        crypto_aead_xchacha20poly1305_ietf_encrypt_final(&state, mac_stream) != 0) {
+        printf("empty encrypt stream failed\n");
+    }
+    crypto_aead_xchacha20poly1305_ietf_encrypt_detached(c_one, mac_one, NULL,
+                                                        m, 0U, ad, ADLEN,
+                                                        NULL, nonce, key);
+    if (memcmp(mac_one, mac_stream, crypto_aead_xchacha20poly1305_ietf_ABYTES) != 0) {
+        printf("empty stream mac != one-shot mac\n");
+    }
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt_init(&state, ad, ADLEN,
+                                                        nonce, key) != 0 ||
+        crypto_aead_xchacha20poly1305_ietf_decrypt_final(&state, mac_stream) != 0) {
+        printf("empty decrypt stream failed\n");
+    }
+
+    sodium_free(m);
+    sodium_free(c_one);
+    sodium_free(c_stream);
+    sodium_free(m2);
+    sodium_free(mac_one);
+    sodium_free(mac_stream);
+    sodium_free(ad);
+    sodium_free(nonce);
+    sodium_free(key);
+}
+
 int
 main(void)
 {
     tv();
+    tv_stream();
 
     return 0;
 }
